@@ -37,13 +37,37 @@ class TransposePrimitive(BasePrimitive):
   @staticmethod
   def abstract(x, kind, pdims, global_shape):
 
-    assert x.shape == global_shape
+    if global_shape == x.shape:
+      return TransposePrimitive.outer_abstract(x, kind)
+    # Make sure that global_shape is divisible by pdims and equals to slice
+
     assert kind in ['x_y', 'y_z', 'z_y', 'y_x']
     match kind:
-      case 'x_y' | 'y_x':
-        transpose_shape = (0, 2, 1)
-      case 'y_z' | 'z_y':
-        transpose_shape = (2, 1, 0)
+    # From X to Y the axis are rolled by 1 and pdims are swapped wrt to the input pdims
+      case 'x_y' | 'y_z':
+        transpose_shape = (2, 0, 1)
+      case 'y_x' | 'z_y':
+        transpose_shape = (1, 2, 0)
+
+    if 1 in pdims:
+      transpose_shape = (1, 2, 0)
+
+    shape = (global_shape[transpose_shape[0]] // pdims[1],
+             global_shape[transpose_shape[1]] // pdims[0],
+             global_shape[transpose_shape[2]])
+
+    return ShapedArray(shape, x.dtype)
+
+  @staticmethod
+  def outer_abstract(x, kind):
+
+    assert kind in ['x_y', 'y_z', 'z_y', 'y_x']
+    match kind:
+    # From X to Y the axis are rolled by 1 and pdims are swapped wrt to the input pdims
+      case 'x_y' | 'y_z':
+        transpose_shape = (2, 0, 1)
+      case 'y_x' | 'z_y':
+        transpose_shape = (1, 2, 0)
 
     shape = (x.shape[transpose_shape[0]], x.shape[transpose_shape[1]],
              x.shape[transpose_shape[2]])
@@ -117,7 +141,9 @@ class TransposePrimitive(BasePrimitive):
                                    arg_infos: Tuple[ShapeDtypeStruct],
                                    result_infos: Tuple[ShapedArray]):
     input_sharding = arg_infos[0].sharding
-    return NamedSharding(input_sharding.mesh, P(*input_sharding.spec))
+
+    tranposed_pdims = (input_sharding.spec[1], input_sharding.spec[0], None)
+    return NamedSharding(input_sharding.mesh, P(*tranposed_pdims))
 
   @staticmethod
   def partition(kind: str, mesh: Mesh, arg_infos: Tuple[ShapeDtypeStruct],
