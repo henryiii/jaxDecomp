@@ -21,6 +21,23 @@ HRESULT Transpose<real_t>::get_transpose_descriptor(cudecompHandle_t handle, siz
   cudecompGridDesc_t grid_desc;
   CHECK_CUDECOMP_EXIT(cudecompGridDescCreate(handle, &grid_desc, &config, nullptr));
 
+  // Get x-pencil information (complex)
+  cudecompPencilInfo_t pinfo_x_c;
+  CHECK_CUDECOMP_EXIT(cudecompGetPencilInfo(handle, grid_desc, &pinfo_x_c, 0, nullptr));
+  // Get y-pencil information (complex)
+  cudecompPencilInfo_t pinfo_y_c;
+  CHECK_CUDECOMP_EXIT(cudecompGetPencilInfo(handle, grid_desc, &pinfo_y_c, 1, nullptr));
+  // Get z-pencil information (complex)
+  cudecompPencilInfo_t pinfo_z_c;
+  CHECK_CUDECOMP_EXIT(cudecompGetPencilInfo(handle, grid_desc, &pinfo_z_c, 2, nullptr));
+
+  std::cout << "pinfo_x_c shapes [" << pinfo_x_c.shape[0] << "," << pinfo_x_c.shape[1] << "," << pinfo_x_c.shape[2]
+            << "]" << std::endl;
+  std::cout << "pinfo_y_c shapes [" << pinfo_y_c.shape[0] << "," << pinfo_y_c.shape[1] << "," << pinfo_y_c.shape[2]
+            << "]" << std::endl;
+  std::cout << "pinfo_z_c shapes [" << pinfo_z_c.shape[0] << "," << pinfo_z_c.shape[1] << "," << pinfo_z_c.shape[2]
+            << "]" << std::endl;
+
   // Get workspace sizes
   int64_t transpose_work_num_elements;
   CHECK_CUDECOMP_EXIT(cudecompGetTransposeWorkspaceSize(handle, grid_desc, &transpose_work_num_elements));
@@ -116,6 +133,8 @@ HRESULT Transpose<real_t>::transpose(cudecompHandle_t handle, transposeDescripto
   void* data_d = buffers[0];
   void* work_d = buffers[1];
   HRESULT hr = S_OK;
+  std::cout << "Before Transposing" << std::endl;
+  inspect_device_array(data_d, false, stream);
   switch (desc.transpose_type) {
   case TransposeType::TRANSPOSE_XY:
     CHECK_CUDECOMP_EXIT(cudecompTransposeXToY(handle, m_GridConfig, data_d, data_d, work_d,

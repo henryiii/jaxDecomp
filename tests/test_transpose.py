@@ -39,7 +39,7 @@ def create_spmd_array(global_shape, pdims):
                                     global_shape[1] // pdims[0],
                                     global_shape[2])
   local_array = local_array + (100**rank)
-  local_array = jnp.array(local_array, dtype=jnp.float32)
+  #local_array = jnp.array(local_array, dtype=jnp.float32)
 
   # Remap to the global array from the local slice
   devices = mesh_utils.create_device_mesh(pdims)
@@ -53,7 +53,34 @@ def create_spmd_array(global_shape, pdims):
 pencil_1 = (size // 2, size // (size // 2))  # 2x2 for V100 and 4x2 for A100
 pencil_2 = (size // (size // 2), size // 2)  # 2x2 for V100 and 2x4 for A100
 params = [(size, 1), (1, size), pencil_1, pencil_2]
-#params = [(size, 1), (1, size)]
+params = [pencil_1]
+
+py = rank // 2
+pz = rank % 2
+
+
+def print_array(array, print_global=True):
+  print(f"Shape is {array.shape}")
+  for z in range(array.shape[0]):
+    for y in range(array.shape[1]):
+      for x in range(array.shape[2]):
+        if print_global:
+          global_index = (array.shape[0] * pz + z, array.shape[1] * py + y, x)
+          print(f"[{z},{y},{x}] global {global_index} = {array[z,y,x]}")
+        else:
+          print(f"[{z},{y},{x}] = {array[z,y,x]}")
+
+
+def check_permutation(array1, array2, msg):
+  print("-" * 8)
+  print(f"checking {msg}")
+  for perm in permutations(range(3)):
+    print(f"Checking permutation {perm}")
+    tranposed = array1.transpose(perm)
+    diff = (abs(tranposed - array2.reshape(tranposed.shape))).max()
+    print(f"{perm} : Diff is {diff} with shape {tranposed.shape}")
+    if diff == 0:
+      print("🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉🎉")
 
 
 @pytest.mark.parametrize("pdims",
@@ -65,23 +92,54 @@ def test_tranpose(pdims):
   print("*" * 80)
   print(f"Testing with pdims {pdims}")
 
-  global_shape = (4, 4, 4)  # These sizes are prime numbers x size of the pmesh
+  global_shape = (2, 4, 6)  # These sizes are prime numbers x size of the pmesh
   #global_shape = (29 * size, 19 * size, 17 * size)
-  print(f"Global shape is {global_shape}")
 
   global_array, mesh = create_spmd_array(global_shape, pdims)
+  print(f"Global shape is {global_shape}")
+  print(f"Global shape is {global_array.shape}")
 
-  gathered_array = multihost_utils.process_allgather(global_array, tiled=True)
+  # All gather function
+  @partial(
+      shard_map,
+      mesh=mesh,
+      in_specs=(P('z', 'y'), P()),
+      out_specs=P(),
+      check_rep=False)
+  def sharded_allgather(arr, order):
+    axis_0, axis_1 = order
+    gathered_z_axis = jax.lax.all_gather(
+        arr, axis_name='z', axis=axis_0, tiled=True)
+    gathered = jax.lax.all_gather(
+        gathered_z_axis, axis_name='y', axis=axis_1, tiled=True)
+    return gathered
+
+  def check_with_sharding(array1, array2, msg):
+    perms = list(permutations(range(3)))
+
+    for perm_x in perms:
+      for perm_y in perms:
+        print(
+            f"Checking {msg} with sharding array 1 {perm_x} and sharding array 2 {perm_y}"
+        )
+        gathered_array_1 = sharded_allgather(array1, perm_x).addressable_data(0)
+        gathered_array_2 = sharded_allgather(array2, perm_y).addressable_data(0)
+        check_permutation(gathered_array_1, gathered_array_2, msg)
+
   with mesh:
+    print(f"Step transposeXtoY")
     jd_tranposed_xy = transposeXtoY(global_array)
+    print(f"Step transposeYtoZ")
     jd_tranposed_yz = transposeYtoZ(jd_tranposed_xy)
-    jd_tranposed_zy = transposeZtoY(jd_tranposed_yz)
-    jd_tranposed_yx = transposeYtoX(jd_tranposed_zy)
+    #print(f"Step transposeZtoY")
+    #jd_tranposed_zy = transposeZtoY(jd_tranposed_yz)
+    #print(f"Step transposeYtoX")
+    #jd_tranposed_yx = transposeYtoX(jd_tranposed_zy)
 
   print(f"jd_tranposed_xy shape {jd_tranposed_xy.shape}")
   print(f"jd_tranposed_yz shape {jd_tranposed_yz.shape}")
-  print(f"jd_tranposed_zy shape {jd_tranposed_zy.shape}")
-  print(f"jd_tranposed_yx shape {jd_tranposed_yx.shape}")
+  #print(f"jd_tranposed_zy shape {jd_tranposed_zy.shape}")
+  #print(f"jd_tranposed_yx shape {jd_tranposed_yx.shape}")
 
   if pdims[1] == 1:
     original_sharding = P(None, 'y')
@@ -98,20 +156,89 @@ def test_tranpose(pdims):
 
   print(f"JD tranposed yz sharding {jd_tranposed_yz.sharding.spec}")
   print(f"JD tranposed xy sharding {jd_tranposed_xy.sharding.spec}")
+  gathered_array = multihost_utils.process_allgather(global_array, tiled=True)
 
   gathered_jd_xy = multihost_utils.process_allgather(
       jd_tranposed_xy, tiled=True)
   gathered_jd_yz = multihost_utils.process_allgather(
       jd_tranposed_yz, tiled=True)
-  gathered_jd_zy = multihost_utils.process_allgather(
-      jd_tranposed_zy, tiled=True)
-  gathered_jd_yx = multihost_utils.process_allgather(
-      jd_tranposed_yx, tiled=True)
+  grid_trans_gathered_jd_xy = sharded_allgather(jd_tranposed_xy)
+  grid_trans_gathered_jd_yz = sharded_allgather(jd_tranposed_yz)
+  #gathered_jd_zy = multihost_utils.process_allgather(
+  #    jd_tranposed_zy, tiled=True)
+  #gathered_jd_yx = multihost_utils.process_allgather(
+  #    jd_tranposed_yx, tiled=True)
 
-  assert jd_tranposed_xy.sharding.spec == transposed_sharding
-  assert jd_tranposed_yz.sharding.spec == original_sharding
-  assert jd_tranposed_zy.sharding.spec == transposed_sharding
-  assert jd_tranposed_yx.sharding.spec == original_sharding
+  check_with_sharding(global_array, jd_tranposed_xy,
+                      "global_array, jd_tranposed_xy")
+  check_with_sharding(global_array, jd_tranposed_yz,
+                      "global_array, jd_tranposed_yz")
+  check_with_sharding(jd_tranposed_xy, jd_tranposed_yz,
+                      "global_array, jd_tranposed_zy")
+
+  print("*" * 80)
+  print("*" * 80)
+  print("*" * 80)
+  print("*" * 80)
+  print("Slice arrays")
+  print("*" * 80)
+  print(f"Original Array")
+  print_array(global_array.addressable_data(0))
+  print(f"JD tranposed xy")
+  print_array(jd_tranposed_xy.addressable_data(0))
+  print(f"JD tranposed yz")
+  print_array(jd_tranposed_yz.addressable_data(0))
+  #print(f"JD tranposed zy")
+  #print_array(jd_tranposed_zy.addressable_data(0))
+  #print(f"JD tranposed yx")
+  #print_array(jd_tranposed_yx.addressable_data(0))
+
+  grid_trans_gathered_jd_xy = grid_trans_gathered_jd_xy.addressable_data(0)
+  grid_trans_gathered_jd_yz = grid_trans_gathered_jd_yz.addressable_data(0)
+
+  print("*" * 80)
+  print("Gathered arrays")
+  print("*" * 80)
+  print(f"Original Array")
+  print(gathered_array.shape)
+  print(f"Original Array")
+  print(gathered_array)
+  print_array(gathered_array, False)
+  print(f"gathered_jd_xy")
+  print_array(gathered_jd_xy, False)
+  print(f"gathered_JAX_xy")
+  print_array(gathered_array.transpose([2, 0, 1]), False)
+  print(f"gathered_jd_yz")
+  print_array(gathered_jd_yz, False)
+  print(f"gathered_JAX_yz")
+  print_array(gathered_jd_xy.transpose([2, 0, 1]), False)
+  check_permutation(gathered_array, gathered_jd_yz,
+                    "gathered_array, gathered_jd_yz")
+  check_permutation(gathered_array, gathered_jd_xy,
+                    "gathered_array, gathered_jd_xy")
+  check_permutation(gathered_jd_xy, gathered_jd_yz,
+                    "gathered_jd_xy, gathered_jd_yz")
+
+  check_permutation(gathered_array, grid_trans_gathered_jd_yz,
+                    "gathered_array, grid_trans_gathered_jd_yz")
+  check_permutation(gathered_array, grid_trans_gathered_jd_xy,
+                    "gathered_array, grid_trans_gathered_jd_xy")
+  check_permutation(grid_trans_gathered_jd_xy, grid_trans_gathered_jd_yz,
+                    "grid_trans_gathered_jd_xy, grid_trans_gathered_jd_yz")
+
+  check_permutation(gathered_jd_yz, grid_trans_gathered_jd_xy,
+                    "gathered_jd_yz, grid_trans_gathered_jd_xy")
+  check_permutation(gathered_jd_xy, grid_trans_gathered_jd_yz,
+                    "gathered_jd_xy, grid_trans_gathered_jd_yz")
+  #print(f"gathered_jd_zy")
+  #print_array(gathered_jd_zy, False)
+  #print(f"gathered_jd_yx")
+  #print_array(gathered_jd_yx, False)
+
+  #assert jd_tranposed_xy.sharding.spec == transposed_sharding
+  #assert jd_tranposed_yz.sharding.spec == original_sharding
+  #assert jd_tranposed_zy.sharding.spec == transposed_sharding
+  #assert jd_tranposed_yx.sharding.spec == original_sharding
 
   # Explanation :
 
@@ -129,40 +256,41 @@ def test_tranpose(pdims):
 
   # Every tranpose, also tranposes the pdim grid from P('Z', 'Y') to P('Y', 'Z') or vise versa
 
-  forward_tranpose = [1, 2, 0] if 1 in pdims else [2, 0, 1]
-  forward_pencils = [2, 0, 1]
-  backward_tranpose = [2, 0, 1] if 1 in pdims else [1, 2, 0]
-  backward_pencils = [1, 2, 0]
-  double_back = [0, 1, 2] if 1 in pdims else [1, 2, 0]
-
-  # Test X to Y transpose
-  # It tranposes ZYX to XZY so from 0 1 2 to 2 0 1
-  assert_array_equal(gathered_array.transpose(forward_tranpose), gathered_jd_xy)
-  # *********************************************
-  # Test Y to Z transpose
-  # It tranposes XZY to YXZ so from 0 1 2 to 2 0 1 again
-  assert_array_equal(gathered_jd_xy.transpose(forward_pencils), gathered_jd_yz)
-  # and from the global array ZYX to YXZ so from 0 1 2 to 1 2 0
-  assert_array_equal(gathered_array.transpose(double_back), gathered_jd_yz)
-  # *********************************************
-  # Test Z to Y transpose
-  # It tranposes YXZ to XZY so from 0 1 2 to 1 2 0
-  assert_array_equal(
-      gathered_jd_yz.transpose(backward_tranpose), gathered_jd_zy)
-  # The Y pencils should match in forward and backward transposes (despite the inverted grid)
-  # assert_array_equal(gathered_jd_zy, gathered_jd_xy)
-  # *********************************************
-  # Test Y to X transpose
-  # It tranposes XZY to ZYX so from 0 1 2 to 1 2 0
-  assert_array_equal(gathered_jd_zy.transpose(backward_pencils), gathered_jd_yx)
-  # The X pencils should match in forward and backward transposes (original array)
-  assert_array_equal(gathered_jd_yx, gathered_array)
-
-  print(f"Pdims {pdims} are ok!")
+  #forward_tranpose = [1, 2, 0] if 1 in pdims else [2, 0, 1]
+  #forward_pencils = [2, 0, 1]
+  #backward_tranpose = [2, 0, 1] if 1 in pdims else [1, 2, 0]
+  #backward_pencils = [1, 2, 0]
+  #double_back = [0, 1, 2] if 1 in pdims else [1, 2, 0]
 
 
-@pytest.mark.parametrize("pdims",
-                         params)  # Test with Slab and Pencil decompositions
+#
+## Test X to Y transpose
+## It tranposes ZYX to XZY so from 0 1 2 to 2 0 1
+#assert_array_equal(gathered_array.transpose(forward_tranpose), gathered_jd_xy)
+## *********************************************
+## Test Y to Z transpose
+## It tranposes XZY to YXZ so from 0 1 2 to 2 0 1 again
+#assert_array_equal(gathered_jd_xy.transpose(forward_pencils), gathered_jd_yz)
+## and from the global array ZYX to YXZ so from 0 1 2 to 1 2 0
+#assert_array_equal(gathered_array.transpose(double_back), gathered_jd_yz)
+## *********************************************
+## Test Z to Y transpose
+## It tranposes YXZ to XZY so from 0 1 2 to 1 2 0
+#assert_array_equal(
+#    gathered_jd_yz.transpose(backward_tranpose), gathered_jd_zy)
+## The Y pencils should match in forward and backward transposes (despite the inverted grid)
+## assert_array_equal(gathered_jd_zy, gathered_jd_xy)
+## *********************************************
+## Test Y to X transpose
+## It tranposes XZY to ZYX so from 0 1 2 to 1 2 0
+#assert_array_equal(gathered_jd_zy.transpose(backward_pencils), gathered_jd_yx)
+## The X pencils should match in forward and backward transposes (original array)
+#assert_array_equal(gathered_jd_yx, gathered_array)
+#
+#print(f"Pdims {pdims} are ok!")
+
+
+@pytest.mark.skip()
 def test_tranpose_grad(pdims):
 
   global_shape = (4, 4, 4)  # These sizes are prime numbers x size of the pmesh

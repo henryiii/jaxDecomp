@@ -44,17 +44,29 @@ class TransposePrimitive(BasePrimitive):
     assert kind in ['x_y', 'y_z', 'z_y', 'y_x']
     match kind:
     # From X to Y the axis are rolled by 1 and pdims are swapped wrt to the input pdims
-      case 'x_y' | 'y_z':
+      case 'x_y':
         transpose_shape = (2, 0, 1)
-      case 'y_x' | 'z_y':
+        transpose_pdims = pdims[::-1]
+      case 'y_z':
+        transpose_shape = (2, 0, 1)
+        transpose_pdims = pdims
+      case 'y_x':
         transpose_shape = (1, 2, 0)
+        transpose_pdims = pdims[::-1]
+      case 'z_y':
+        transpose_shape = (1, 2, 0)
+        transpose_pdims = pdims
 
-    if 1 in pdims:
-      transpose_shape = (1, 2, 0)
+    #if 1 in pdims:
+    #  transpose_shape = (1, 2, 0)
 
-    shape = (global_shape[transpose_shape[0]] // pdims[1],
-             global_shape[transpose_shape[1]] // pdims[0],
+    shape = (global_shape[transpose_shape[0]] // transpose_pdims[1],
+             global_shape[transpose_shape[1]] // transpose_pdims[0],
              global_shape[transpose_shape[2]])
+
+    print(
+        f"inner_abstract shape: {x.shape} pdims: {pdims} global_shape: {global_shape} transpose_shape: {transpose_shape} kind: {kind} new shape: {shape}"
+    )
 
     return ShapedArray(shape, x.dtype)
 
@@ -72,6 +84,12 @@ class TransposePrimitive(BasePrimitive):
     shape = (x.shape[transpose_shape[0]], x.shape[transpose_shape[1]],
              x.shape[transpose_shape[2]])
 
+    #shape = x.shape
+
+    print(
+        f"outer_abstract shape: {x.shape} transpose_shape: {transpose_shape} kind: {kind} new shape: {shape}"
+    )
+
     return ShapedArray(shape, x.dtype)
 
   @staticmethod
@@ -84,6 +102,23 @@ class TransposePrimitive(BasePrimitive):
     is_double = dtype == np.float64
 
     layout = tuple(range(len(x_type.shape) - 1, -1, -1))
+
+    # Recover original global shape
+    match kind:
+      case 'x_y':
+        transpose_shape = (0, 1, 2)
+      case 'y_z':
+        transpose_shape = (1, 2, 0)
+      case 'z_y':
+        transpose_shape = (2, 0, 1)
+      case 'y_x':
+        transpose_shape = (1, 2, 0)
+
+    old_global_shape = global_shape
+    global_shape = tuple([global_shape[i] for i in transpose_shape])
+    print(
+        f"For kind: {kind} old global shape: {old_global_shape} new global shape: {global_shape} using {transpose_shape}"
+    )
 
     config = _jaxdecomp.GridConfig()
     config.pdims = pdims
@@ -141,9 +176,7 @@ class TransposePrimitive(BasePrimitive):
                                    arg_infos: Tuple[ShapeDtypeStruct],
                                    result_infos: Tuple[ShapedArray]):
     input_sharding = arg_infos[0].sharding
-
-    tranposed_pdims = (input_sharding.spec[1], input_sharding.spec[0], None)
-    return NamedSharding(input_sharding.mesh, P(*tranposed_pdims))
+    return NamedSharding(input_sharding.mesh, P(*input_sharding.spec))
 
   @staticmethod
   def partition(kind: str, mesh: Mesh, arg_infos: Tuple[ShapeDtypeStruct],
@@ -152,7 +185,7 @@ class TransposePrimitive(BasePrimitive):
     input_sharding = NamedSharding(mesh, P(*arg_infos[0].sharding.spec))
     output_sharding = NamedSharding(mesh, P(*result_infos.sharding.spec))
     global_shape = arg_infos[0].shape
-    pdims = (get_axis_size(input_sharding, 0), get_axis_size(input_sharding, 1))
+    pdims = (get_axis_size(input_sharding, 1), get_axis_size(input_sharding, 0))
     impl = partial(
         TransposePrimitive.per_shard_impl,
         kind=kind,
