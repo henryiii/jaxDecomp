@@ -133,8 +133,6 @@ HRESULT Transpose<real_t>::transpose(cudecompHandle_t handle, transposeDescripto
   void* data_d = buffers[0];
   void* work_d = buffers[1];
   HRESULT hr = S_OK;
-  std::cout << "Before Transposing" << std::endl;
-  inspect_device_array(data_d, false, stream);
   switch (desc.transpose_type) {
   case TransposeType::TRANSPOSE_XY:
     CHECK_CUDECOMP_EXIT(cudecompTransposeXToY(handle, m_GridConfig, data_d, data_d, work_d,
