@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.19...3.25)
 set(CMAKE_CXX_STANDARD  17)
 set(CMAKE_CUDA_STANDARD 17)
 # Latest JAX v0.4.26 no longer supports cuda 11.8
-set(NVHPC_CUDA_VERSION 12.2)
+option(NVHPC_CUDA_VERSION "CUDA version to build for" 12.2)
 # Build debug
 # set(CMAKE_BUILD_TYPE Debug)
 add_subdirectory(third_party/cuDecomp)
